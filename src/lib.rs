@@ -36,93 +36,51 @@
 //! Hash a password, then verify the hash:
 //!
 //! ```rust
-//! use argon2_kdf::Hasher;
+//! use argon2_kdf::{Hasher, Hash};
 //!
 //! let password = b"password";
-//! let hash = Hasher::default().hash(password).unwrap();
+//! let hash: Hash<16, 32> = Hasher::default().hash(password).unwrap();
 //! assert!(hash.verify(password));
 //! ```
 //!
-//! Change the parameters used for hashing:
+//! Convert a hash to a string and back:
 //!
 //! ```rust
-//! use argon2_kdf::{Algorithm, Hasher};
-//!
-//! let password = b"password";
-//!
-//! let hash = Hasher::new()
-//!         .algorithm(Algorithm::Argon2id)
-//!         .salt_length(24)
-//!         .hash_length(42)
-//!         .iterations(12)
-//!         .memory_cost_kib(125000)
-//!         .threads(2)
-//!         .hash(password)
-//!         .unwrap();
-//!
-//! assert!(hash.verify(password));
-//! assert_eq!(hash.as_bytes().len(), 42);
-//! assert_eq!(hash.salt_bytes().len(), 24);
-//! ```
-//!
-//! Verify a hash from a hash string:
-//!
-//! ```rust
-//! use argon2_kdf::{Hash, Hasher};
+//! use argon2_kdf::{Hasher, Hash};
 //! use std::str::FromStr;
 //!
 //! let password = b"password";
-//! let hash_string = "$argon2id$v=19$m=128,t=2,p=1$VnZ3ZFNhZkc$djHLRc+4K/DqQL0f8DMAQQ";
-//!
-//! let hash = Hash::from_str(hash_string).unwrap();
-//! assert!(hash.verify(password));
-//! ```
-//!
-//! Generate a hash string:
-//!
-//! ```rust
-//! use argon2_kdf::{Hash, Hasher};
-//! use std::str::FromStr;
-//!
-//! let password = b"password";
-//! let hash = Hasher::default().hash(password).unwrap();
-//!
+//! let hash: Hash<16, 32> = Hasher::default().hash(password).unwrap();
 //! let hash_string = hash.to_string();
-//!
-//! assert!(Hash::from_str(&hash_string).unwrap().verify(password));
+//! let hash: Hash<16, 32> = Hash::from_str(&hash_string).unwrap();
+//! assert!(hash.verify(password));
 //! ```
 //!
-//! Use a secret (sometimes called a
-//! "[pepper](https://en.wikipedia.org/wiki/Pepper_(cryptography))") for hashing and
-//! verification:
+//! Hash a password with a secret, then verify the hash:
 //!
 //! ```rust
-//! use argon2_kdf::{Hasher, Secret};
+//! use argon2_kdf::{Hasher, Hash, Secret};
 //!
 //! let password = b"password";
 //! let secret = b"secret";
-//!
-//! let hash = Hasher::default()
-//!         .secret(secret.into())
-//!         .hash(password)
-//!         .unwrap();
-//!
+//! let hash: Hash<16, 32> = Hasher::default()
+//!     .secret(secret.into())
+//!     .hash(password)
+//!     .unwrap();
 //! assert!(hash.verify_with_secret(password, secret.into()));
 //! ```
 //!
-//! Use your own salt (by default, the hasher will use a secure-random salt):
+//! Hash a password with a custom salt, then verify the hash:
 //!
 //! ```rust
-//! use argon2_kdf::Hasher;
+//! use argon2_kdf::{Hasher, Hash};
 //!
 //! let password = b"password";
-//! let salt = b"dontusethissalt";
-//!
-//! let hash = Hasher::default()
-//!         .custom_salt(salt)
-//!         .hash(password)
-//!         .unwrap();
-//!
+//! let salt = b"customsalt";
+//! let hash: Hash<10, 32> = Hasher::default()
+//!     .custom_salt(salt)
+//!     .hash(password)
+//!     .unwrap();
 //! assert!(hash.verify(password));
 //! ```
 

@@ -269,7 +269,10 @@ impl<'a> Hasher<'a> {
     /// This is an expensive operation. For some appliations, it might make sense to move this
     /// operation to a separate thread using `std::thread` or something like
     /// [the Rayon crate](https://docs.rs/rayon/latest/rayon/) to avoid blocking main threads.
-    pub fn hash(self, password: &[u8]) -> Result<Hash, Argon2Error> {
+    pub fn hash<const SALT_SIZE: usize, const HASH_SIZE: usize>(
+        self,
+        password: &[u8],
+    ) -> Result<Hash<SALT_SIZE, HASH_SIZE>, Argon2Error> {
         let hash_len_usize = match usize::try_from(self.hash_len) {
             Ok(l) => l,
             Err(_) => return Err(Argon2Error::InvalidParameter("Hash length is too big")),
@@ -375,15 +378,19 @@ impl<'a> Hasher<'a> {
             mem_cost_kib: self.mem_cost_kib,
             iterations: self.iterations,
             threads: self.threads,
-            salt,
-            hash: hash_buffer,
+            salt: salt
+                .try_into()
+                .map_err(|_| Argon2Error::InvalidParameter("Salt length mismatch"))?,
+            hash: hash_buffer
+                .try_into()
+                .map_err(|_| Argon2Error::InvalidParameter("Hash length mismatch"))?,
         })
     }
 }
 
 /// A container for an Argon2 hash, the corresponding salt, and the parameters used for hashing
 #[derive(Clone, Debug)]
-pub struct Hash {
+pub struct Hash<const SALT_SIZE: usize, const HASH_SIZE: usize> {
     /// The algorithm used for hashing.
     pub alg: Algorithm,
     /// The memory cost in kibibytes.
@@ -393,13 +400,13 @@ pub struct Hash {
     /// The number of threads.
     pub threads: u32,
     /// The salt used to generate the hash.
-    pub salt: Vec<u8>,
+    pub salt: [u8; SALT_SIZE],
     /// The hash itself.
-    pub hash: Vec<u8>,
+    pub hash: [u8; HASH_SIZE],
 }
 
 #[allow(clippy::to_string_trait_impl)]
-impl ToString for Hash {
+impl<const SALT_SIZE: usize, const HASH_SIZE: usize> ToString for Hash<SALT_SIZE, HASH_SIZE> {
     /// Generates a hash string. Aside from the hash, the hash string also includes the salt
     /// and paramters used to generate the hash, making it easy to store in a database or a
     /// cache. This string is formatted to a standard shared by most implementations of argon2,
@@ -431,7 +438,7 @@ impl ToString for Hash {
     }
 }
 
-impl FromStr for Hash {
+impl<const SALT_SIZE: usize, const HASH_SIZE: usize> FromStr for Hash<SALT_SIZE, HASH_SIZE> {
     type Err = Argon2Error;
 
     /// Deserializes a hash string into parts (e.g. the hash, the salt, parameters) that can
@@ -470,13 +477,17 @@ impl FromStr for Hash {
             mem_cost_kib: tokenized_hash.mem_cost_kib,
             iterations: tokenized_hash.iterations,
             threads: tokenized_hash.threads,
-            salt: decoded_salt,
-            hash: decoded_hash,
+            salt: decoded_salt
+                .try_into()
+                .map_err(|_| Argon2Error::InvalidHash("Salt length mismatch"))?,
+            hash: decoded_hash
+                .try_into()
+                .map_err(|_| Argon2Error::InvalidHash("Hash length mismatch"))?,
         })
     }
 }
 
-impl Hash {
+impl<const SALT_SIZE: usize, const HASH_SIZE: usize> Hash<SALT_SIZE, HASH_SIZE> {
     /// Returns a reference to a byte slice of the computed hash/key.
     pub fn as_bytes(&self) -> &[u8] {
         &self.hash
@@ -546,7 +557,7 @@ impl Hash {
             hash_builder = hash_builder.secret(s);
         }
 
-        let hashed_password = match hash_builder.hash(password) {
+        let hashed_password = match hash_builder.hash::<SALT_SIZE, HASH_SIZE>(password) {
             Ok(h) => h,
             Err(_) => return false,
         };
@@ -575,16 +586,17 @@ mod tests {
 
     #[test]
     fn test_byte_hash_into_hash_string() {
-        let hash = Hash {
+        let hash = Hash::<8, 32> {
             alg: Algorithm::Argon2id,
             mem_cost_kib: 128,
             iterations: 3,
             threads: 2,
-            salt: vec![1, 2, 3, 4, 5, 6, 7, 8],
+            salt: [1, 2, 3, 4, 5, 6, 7, 8],
             hash: b64_stdnopad
                 .decode("ypJ3pKxN4aWGkwMv0TOb08OIzwrfK1SZWy64vyTLKo8")
                 .unwrap()
-                .to_vec(),
+                .try_into()
+                .expect("slice with incorrect length"),
         };
 
         assert_eq!(
@@ -597,7 +609,7 @@ mod tests {
 
     #[test]
     fn test_hash_from_str() {
-        let hash = Hash::from_str(
+        let hash: Hash<8, 32> = Hash::from_str(
             "$argon2id$v=19$m=128,t=3,p=2$AQIDBAUGBwg$7OU7S/azjYpnXXySR52cFWeisxk1VVjNeXqtQ8ZM/Oc",
         )
         .unwrap();
@@ -605,15 +617,19 @@ mod tests {
         assert_eq!(hash.mem_cost_kib, 128);
         assert_eq!(hash.iterations, 3);
         assert_eq!(hash.threads, 2);
-        assert_eq!(hash.salt, b64_stdnopad.decode("AQIDBAUGBwg").unwrap());
+        assert_eq!(
+            hash.salt,
+            b64_stdnopad.decode("AQIDBAUGBwg").unwrap().as_slice()
+        );
         assert_eq!(
             hash.hash,
             b64_stdnopad
                 .decode("7OU7S/azjYpnXXySR52cFWeisxk1VVjNeXqtQ8ZM/Oc",)
                 .unwrap()
+                .as_slice()
         );
 
-        let hash = Hash::from_str(
+        let hash: Hash<8, 32> = Hash::from_str(
             "$argon2id$v=19$t=3,m=128,p=2$AQIDBAUGBwg$7OU7S/azjYpnXXySR52cFWeisxk1VVjNeXqtQ8ZM/Oc",
         )
         .unwrap();
@@ -621,15 +637,19 @@ mod tests {
         assert_eq!(hash.mem_cost_kib, 128);
         assert_eq!(hash.iterations, 3);
         assert_eq!(hash.threads, 2);
-        assert_eq!(hash.salt, b64_stdnopad.decode("AQIDBAUGBwg").unwrap());
+        assert_eq!(
+            hash.salt,
+            b64_stdnopad.decode("AQIDBAUGBwg").unwrap().as_slice()
+        );
         assert_eq!(
             hash.hash,
             b64_stdnopad
                 .decode("7OU7S/azjYpnXXySR52cFWeisxk1VVjNeXqtQ8ZM/Oc",)
                 .unwrap()
+                .as_slice()
         );
 
-        let hash = Hash::from_str(
+        let hash: Hash<8, 32> = Hash::from_str(
             "$argon2id$v=19$p=2,m=128,t=3$AQIDBAUGBwg$7OU7S/azjYpnXXySR52cFWeisxk1VVjNeXqtQ8ZM/Oc",
         )
         .unwrap();
@@ -637,15 +657,19 @@ mod tests {
         assert_eq!(hash.mem_cost_kib, 128);
         assert_eq!(hash.iterations, 3);
         assert_eq!(hash.threads, 2);
-        assert_eq!(hash.salt, b64_stdnopad.decode("AQIDBAUGBwg").unwrap());
         assert_eq!(
-            hash.hash,
+            hash.salt,
+            b64_stdnopad.decode("AQIDBAUGBwg").unwrap().as_slice()
+        );
+        assert_eq!(
+            hash.hash.as_slice(),
             b64_stdnopad
                 .decode("7OU7S/azjYpnXXySR52cFWeisxk1VVjNeXqtQ8ZM/Oc",)
                 .unwrap()
+                .as_slice()
         );
 
-        let hash = Hash::from_str(
+        let hash: Hash<8, 32> = Hash::from_str(
             "$argon2id$v=19$t=3,p=2,m=128$AQIDBAUGBwg$7OU7S/azjYpnXXySR52cFWeisxk1VVjNeXqtQ8ZM/Oc",
         )
         .unwrap();
@@ -653,106 +677,111 @@ mod tests {
         assert_eq!(hash.mem_cost_kib, 128);
         assert_eq!(hash.iterations, 3);
         assert_eq!(hash.threads, 2);
-        assert_eq!(hash.salt, b64_stdnopad.decode("AQIDBAUGBwg").unwrap());
         assert_eq!(
-            hash.hash,
+            hash.salt,
+            b64_stdnopad.decode("AQIDBAUGBwg").unwrap().as_slice()
+        );
+        assert_eq!(
+            hash.hash.as_slice(),
             b64_stdnopad
                 .decode("7OU7S/azjYpnXXySR52cFWeisxk1VVjNeXqtQ8ZM/Oc",)
                 .unwrap()
+                .as_slice()
         );
     }
 
     #[test]
     fn test_invalid_hash_from_str() {
-        let hash = Hash::from_str(
+        let hash: Result<Hash<16, 32>, Argon2Error> = Hash::from_str(
             "$argon2id$v=19$m=128,t=3,p=2,$AQIDBAUGBwg$7OU7S/azjYpnXXySR52cFWeisxk1VVjNeXqtQ8ZM/Oc",
         );
 
         assert!(hash.is_err());
 
-        let hash = Hash::from_str(
+        let hash: Result<Hash<16, 32>, Argon2Error> = Hash::from_str(
             "$argon2id$v=19$t=3,m=128,p=2,m=128$AQIDBAUGBwg$7OU7S/azjYpnXXySR52cFWeisxk1VVjNeXqtQ8ZM/Oc"
         );
 
         assert!(hash.is_err());
 
-        let hash = Hash::from_str(
+        let hash: Result<Hash<16, 32>, Argon2Error> = Hash::from_str(
             "$argon2i$v=19$p=2m=128,t=3$AQIDBAUGBwg$7OU7S/azjYpnXXySR52cFWeisxk1VVjNeXqtQ8ZM/Oc",
         );
 
         assert!(hash.is_err());
 
-        let hash = Hash::from_str(
+        let hash: Result<Hash<16, 32>, Argon2Error> = Hash::from_str(
             "$argon2id$v=19$p=2m=128,t=3$AQIDBAUGBwg$7OU7S/azjYpnXXySR52cFWeisxk1VVjNeXqtQ8ZM/Oc",
         );
 
         assert!(hash.is_err());
 
-        let hash = Hash::from_str(
+        let hash: Result<Hash<16, 32>, Argon2Error> = Hash::from_str(
             "$argon2id$t=3,p=2,m=128$AQIDBAUGBwg$7OU7S/azjYpnXXySR52cFWeisxk1VVjNeXqtQ8ZM/Oc",
         );
 
         assert!(hash.is_err());
 
-        let hash = Hash::from_str(
+        let hash: Result<Hash<16, 32>, Argon2Error> = Hash::from_str(
             "$argon2$v=19$m=128,t=3,p=2$AQIDBAUGBwg$7OU7S/azjYpnXXySR52cFWeisxk1VVjNeXqtQ8ZM/Oc",
         );
 
         assert!(hash.is_err());
 
-        let hash = Hash::from_str(
+        let hash: Result<Hash<16, 32>, Argon2Error> = Hash::from_str(
             "$argon2id$v=19$m=128,t=3,p=2AQIDBAUGBwg$7OU7S/azjYpnXXySR52cFWeisxk1VVjNeXqtQ8ZM/Oc",
         );
 
         assert!(hash.is_err());
 
-        let hash = Hash::from_str(
+        let hash: Result<Hash<16, 32>, Argon2Error> = Hash::from_str(
             "$argon2id$v=18$m=128,t=3,p=2$AQIDBAUGBwg$7OU7S/azjYpnXXySR52cFWeisxk1VVjNeXqtQ8ZM/Oc",
         );
 
         assert!(hash.is_err());
 
-        let hash = Hash::from_str(
+        let hash: Result<Hash<16, 32>, Argon2Error> = Hash::from_str(
             "argon2id$v=19$m=128,t=3,p=2$AQIDBAUGBwg$7OU7S/azjYpnXXySR52cFWeisxk1VVjNeXqtQ8ZM/Oc",
         );
 
         assert!(hash.is_err());
 
-        let hash = Hash::from_str(
+        let hash: Result<Hash<16, 32>, Argon2Error> = Hash::from_str(
             "$argon2id$v=19$m=128,t3,p=2$AQIDBAUGBwg$7OU7S/azjYpnXXySR52cFWeisxk1VVjNeXqtQ8ZM/Oc",
         );
 
         assert!(hash.is_err());
 
-        let hash = Hash::from_str(
+        let hash: Result<Hash<16, 32>, Argon2Error> = Hash::from_str(
             "$argon2id$v=19$m=128,t=3,p=2$AQIDBAUGBwg7OU7S/azjYpnXXySR52cFWeisxk1VVjNeXqtQ8ZM/Oc",
         );
 
         assert!(hash.is_err());
 
-        let hash = Hash::from_str(
+        let hash: Result<Hash<16, 32>, Argon2Error> = Hash::from_str(
             "$argon2id$v=19$m=128,t=3,p=2$AQIDBAUGBwg$7OU7S/azjYpnXXySR52cFWeisxk1VVjNeXqtQ8ZM/Oc$",
         );
 
         assert!(hash.is_err());
 
-        let hash = Hash::from_str("$argon2id$v=19$m=128,t=3,p=2$AQIDBAUGBwg$$");
+        let hash: Result<Hash<16, 32>, Argon2Error> =
+            Hash::from_str("$argon2id$v=19$m=128,t=3,p=2$AQIDBAUGBwg$$");
 
         assert!(hash.is_err());
 
-        let hash = Hash::from_str(
+        let hash: Result<Hash<16, 32>, Argon2Error> = Hash::from_str(
             "$argon2id$v=19$m=128,p=2$AQIDBAUGBwg$7OU7S/azjYpnXXySR52cFWeisxk1VVjNeXqtQ8ZM/Oc",
         );
 
         assert!(hash.is_err());
 
-        let hash = Hash::from_str(
+        let hash: Result<Hash<16, 32>, Argon2Error> = Hash::from_str(
             "$argon2id$v=19$t=2,p=2$AQIDBAUGBwg$7OU7S/azjYpnXXySR52cFWeisxk1VVjNeXqtQ8ZM/Oc",
         );
 
         assert!(hash.is_err());
 
-        let hash = Hash::from_str(
+        let hash: Result<Hash<16, 32>, Argon2Error> = Hash::from_str(
             "$argon2id$v=19$t=2,m=128$AQIDBAUGBwg$7OU7S/azjYpnXXySR52cFWeisxk1VVjNeXqtQ8ZM/Oc",
         );
 
@@ -773,9 +802,12 @@ mod tests {
             .threads(1)
             .secret((&key).into());
 
-        let hash = hash_builder.hash(auth_string).unwrap().to_string();
+        let hash = hash_builder
+            .hash::<16, 32>(auth_string)
+            .unwrap()
+            .to_string();
 
-        assert!(Hash::from_str(&hash)
+        assert!(Hash::<16, 32>::from_str(&hash)
             .unwrap()
             .verify_with_secret(auth_string, (&key).into()));
     }
@@ -790,11 +822,11 @@ mod tests {
             .iterations(1)
             .memory_cost_kib(16)
             .threads(1)
-            .hash(auth_string)
+            .hash::<16, 32>(auth_string)
             .unwrap()
             .to_string();
 
-        assert!(Hash::from_str(&hash).unwrap().verify(auth_string));
+        assert!(Hash::<16, 32>::from_str(&hash).unwrap().verify(auth_string));
     }
 
     #[test]
@@ -811,9 +843,12 @@ mod tests {
             .threads(1)
             .secret((&key).into());
 
-        let hash = hash_builder.hash(auth_string).unwrap().to_string();
+        let hash = hash_builder
+            .hash::<16, 32>(auth_string)
+            .unwrap()
+            .to_string();
 
-        assert!(Hash::from_str(&hash)
+        assert!(Hash::<16, 32>::from_str(&hash)
             .unwrap()
             .verify_with_secret(auth_string, (&key).into()));
     }
@@ -832,9 +867,12 @@ mod tests {
             .threads(1)
             .secret((&key).into());
 
-        let hash = hash_builder.hash(auth_string).unwrap().to_string();
+        let hash = hash_builder
+            .hash::<16, 32>(auth_string)
+            .unwrap()
+            .to_string();
 
-        assert!(Hash::from_str(&hash)
+        assert!(Hash::<16, 32>::from_str(&hash)
             .unwrap()
             .verify_with_secret(auth_string, (&key).into()));
     }
@@ -852,8 +890,8 @@ mod tests {
             .memory_cost_kib(16)
             .threads(1);
 
-        let hash = hash_builder.hash(auth_string).unwrap().to_string();
-        let hash = Hash::from_str(&hash).unwrap();
+        let hash = hash_builder.hash::<8, 32>(auth_string).unwrap().to_string();
+        let hash: Hash<8, 32> = Hash::from_str(&hash).unwrap();
 
         assert!(hash.verify(auth_string));
 
@@ -867,19 +905,23 @@ mod tests {
 
     #[test]
     fn test_custom_salt() {
-        let auth_string = b"@Pa$$20rd-Test";
+        let auth_string: &[u8; 14] = b"@Pa$$20rd-Test";
         let salt = b"seasalts";
 
         let hash = Hasher::default()
             .custom_salt(salt)
-            .hash(auth_string)
+            .hash::<8, 32>(auth_string)
             .unwrap();
 
-        assert_eq!(hash.salt, salt);
+        assert_eq!(hash.salt, salt.as_slice());
 
         let hash_string = hash.to_string();
 
-        assert!(Hash::from_str(&hash_string).unwrap().verify(auth_string));
+        println!("{}", hash_string);
+
+        assert!(Hash::<8, 32>::from_str(&hash_string)
+            .unwrap()
+            .verify(auth_string));
     }
 
     #[test]
@@ -895,9 +937,12 @@ mod tests {
             .threads(1)
             .secret((&key).into());
 
-        let hash = hash_builder.hash(auth_string).unwrap().to_string();
+        let hash = hash_builder
+            .hash::<16, 32>(auth_string)
+            .unwrap()
+            .to_string();
 
-        assert!(Hash::from_str(&hash)
+        assert!(Hash::<16, 32>::from_str(&hash)
             .unwrap()
             .verify_with_secret(auth_string, (&key).into()));
     }
@@ -915,9 +960,12 @@ mod tests {
             .threads(1)
             .secret((&key).into());
 
-        let hash = hash_builder.hash(auth_string).unwrap().to_string();
+        let hash = hash_builder
+            .hash::<16, 32>(auth_string)
+            .unwrap()
+            .to_string();
 
-        assert!(Hash::from_str(&hash)
+        assert!(Hash::<16, 32>::from_str(&hash)
             .unwrap()
             .verify_with_secret(auth_string, (&key).into()));
     }
@@ -935,9 +983,12 @@ mod tests {
             .threads(1)
             .secret((&key).into());
 
-        let hash = hash_builder.hash(auth_string).unwrap().to_string();
+        let hash = hash_builder
+            .hash::<16, 32>(auth_string)
+            .unwrap()
+            .to_string();
 
-        assert!(Hash::from_str(&hash)
+        assert!(Hash::<16, 32>::from_str(&hash)
             .unwrap()
             .verify_with_secret(auth_string, (&key).into()));
     }
